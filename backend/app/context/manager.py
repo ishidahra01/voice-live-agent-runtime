@@ -1,7 +1,7 @@
 """Context manager for conversation history and summarization."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 import json
 import logging
@@ -68,7 +68,7 @@ class ContextManager:
     """Manages conversation context and history."""
 
     def __init__(self, call_id: str, summary_threshold: int = 8000):
-        self.ctx = FullContext(call_id=call_id, started_at=datetime.utcnow())
+        self.ctx = FullContext(call_id=call_id, started_at=datetime.now(timezone.utc))
         self.summary_threshold = summary_threshold
         self.current_phase = "triage"
 
@@ -79,7 +79,7 @@ class ContextManager:
             text=text,
             item_id=item_id,
             phase=phase,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         self.ctx.utterances.append(utterance)
 
@@ -106,7 +106,7 @@ class ContextManager:
             call_id=call_id,
             item_id=item_id,
             phase=phase,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             duration_ms=duration_ms,
         )
         self.ctx.tool_calls.append(tool_call)
@@ -120,7 +120,7 @@ class ContextManager:
             to_phase=to_phase,
             trigger_tool=trigger_tool,
             context_vars=vars.copy(),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         self.ctx.phase_history.append(transition)
         self.current_phase = to_phase

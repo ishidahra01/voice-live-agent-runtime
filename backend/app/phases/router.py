@@ -4,7 +4,7 @@ import logging
 from typing import TYPE_CHECKING
 from app.phases import PHASES, TRANSITIONS, TERMINAL_TOOLS
 from app.tools import build_tool_schemas, execute_tool
-from datetime import datetime
+from datetime import datetime, timezone
 
 if TYPE_CHECKING:
     from app.voicelive.session import VoiceLiveSession
@@ -43,7 +43,7 @@ class PhaseRouter:
             "item_id": item_id,
             "call_id": call_id,
             "args": {},
-            "start_time": datetime.utcnow(),
+            "start_time": datetime.now(timezone.utc),
         }
 
     async def handle_function_call_arguments_done(self, event: dict) -> None:
@@ -69,9 +69,9 @@ class PhaseRouter:
         logger.info(f"Executing tool: {name} with args: {args}")
 
         # Execute tool
-        start_ms = (datetime.utcnow() - pending["start_time"]).total_seconds() * 1000
+        start_ms = (datetime.now(timezone.utc) - pending["start_time"]).total_seconds() * 1000
         result = await execute_tool(name, args)
-        duration_ms = int((datetime.utcnow() - pending["start_time"]).total_seconds() * 1000)
+        duration_ms = int((datetime.now(timezone.utc) - pending["start_time"]).total_seconds() * 1000)
 
         # Record tool call
         self.context_manager.record_tool_call(
