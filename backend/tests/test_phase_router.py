@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import app.tools  # noqa: F401 – importing registers tool functions
+import app.tools  # noqa: F401 - importing registers tool functions
 from app.phases.router import PhaseRouter
 from app.phases.transitions import TERMINAL_TOOLS, TRANSITIONS
 
