@@ -30,7 +30,8 @@ export class MicRecorder {
     };
 
     source.connect(this.workletNode);
-    // Connect to destination to keep graph alive (output is silent from worklet)
+    // AudioWorklet must be connected to keep the audio graph alive.
+    // The worklet processor does not produce output, so no audible sound is emitted.
     this.workletNode.connect(this.ctx.destination);
   }
 

@@ -37,7 +37,7 @@ const TranscriptLog: React.FC<Props> = ({ entries }) => {
       )}
       {entries.map((e) => (
         <div
-          key={e.id + e.text.length}
+          key={e.id}
           style={{
             display: "flex",
             flexDirection: "column",
