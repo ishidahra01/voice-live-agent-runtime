@@ -5,19 +5,6 @@
 本システムは、Azure Voice Live API を活用した音声エージェントの PoC（Proof of Concept）です。
 ブラウザから WebSocket を介してバックエンド（FastAPI）に接続し、バックエンドがさらに Azure Voice Live API と双方向音声ストリームを確立する 3 層構成です。
 
-## 現在の実装ステータス
-
-このドキュメントには元 Issue で目指した設計も含まれますが、2026-04-23 時点でコードベース上で確認できる実装状態は以下の通りです。
-
-- 実装済み:
-  - ブラウザ / バックエンド / Voice Live API の双方向 WebSocket 接続
-  - 4 フェーズの状態管理、Function Calling、OOB 要約要求
-  - 会話ログ・現在フェーズ・ツール呼び出しの可視化 UI
-- 未完了または部分実装:
-  - Voice Live 接続は `azure-ai-voicelive` SDK ではなく `websockets` ベース
-  - Context compaction は「要約生成とアプリ層保持」までで、`conversation.item.delete` や summary item の再注入は未実装
-  - phase transition の専用 UI ログは未実装
-
 ```
 ┌──────────────┐         WebSocket          ┌──────────────────┐       WebSocket        ┌─────────────────────┐
 │              │  audio (PCM16 base64)  ──>  │                  │  input_audio_buffer ──> │                     │
@@ -48,7 +35,7 @@
 ### VoiceLiveSession
 
 Azure Voice Live API との WebSocket 接続を管理するコアコンポーネント。
-現状の実装は Azure SDK ではなく `websockets` を用いた低レベル実装です。
+Voice Live API の WebSocket プロトコルに直接 JSON イベントを送受信する実装です（`websockets` ライブラリ使用）。
 
 - **責務**: 接続確立、初期セッション設定送信、双方向音声中継、イベントディスパッチ
 - **主要メソッド**:
@@ -76,7 +63,7 @@ Azure Voice Live API との WebSocket 接続を管理するコアコンポーネ
 
 会話の完全な履歴とコンテキスト変数を保持し、トークン閾値による自動要約を管理。
 
-- **責務**: 発話記録、ツール呼出記録、フェーズ遷移記録、トークン計数、要約トリガー
+- **責務**: 発話記録、ツール呼出記録、フェーズ遷移記録、トークン計数、要約トリガー、Voice Live コンテキスト圧縮
 - **主要データ構造**:
   - `Utterance` — 発話（role, text, item_id, phase, timestamp）
   - `ToolCallLog` — ツール呼出（name, args, result, duration_ms, ...）
@@ -84,8 +71,8 @@ Azure Voice Live API との WebSocket 接続を管理するコアコンポーネ
   - `FullContext` — 通話全体の状態（call_id, utterances, tool_calls, vars, cumulative_tokens）
 - **主要メソッド**:
   - `record_utterance(...)` / `record_tool_call(...)` / `record_phase_transition(...)`
-  - `prepare_handoff(session, oob, from_phase, to_phase, tool_result)` — フェーズ遷移時の引き継ぎコンテキスト生成
-  - `maybe_summarize(session, oob)` — トークン閾値超過時の自動要約
+  - `prepare_handoff(session, oob, from_phase, to_phase, tool_result)` — フェーズ遷移時に旧フェーズの item を `conversation.item.delete` で削除し、OOB で引き継ぎサマリを生成、サマリを `conversation.item.create` で先頭に注入
+  - `maybe_summarize(session, oob)` — トークン閾値超過時に直近3ターン以外の古い item を `conversation.item.delete` で削除し、OOB でサマリを生成、サマリを system message として `conversation.item.create` で先頭に注入
   - `dump(path)` — 通話ログを JSON 出力
 - **ファイル**: `backend/app/context/manager.py`
 
@@ -175,7 +162,8 @@ voice-live-agent-runtime/
 │       │   ├── SessionControl.tsx   # セッション制御 UI
 │       │   ├── PhaseIndicator.tsx   # フェーズ表示バッジ
 │       │   ├── TranscriptLog.tsx    # 会話ログ表示
-│       │   └── ToolCallLog.tsx      # ツール呼出ログ表示
+│       │   ├── ToolCallLog.tsx      # ツール呼出ログ表示
+│       │   └── PhaseTransitionLog.tsx # フェーズ遷移履歴ログ
 │       ├── audio/
 │       │   ├── recorder.ts       # MicRecorder（AudioWorklet）
 │       │   └── player.ts         # AudioPlayer（Web Audio API）

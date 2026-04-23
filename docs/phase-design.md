@@ -262,9 +262,6 @@ Voice Live API から `conversation.item.created` イベント（`type: "functio
 
 ## コンテキスト管理戦略
 
-> 現在の実装では、OOB による引き継ぎサマリ生成と `conversation_summary` / `*_summary` のアプリ層保持までは行われます。
-> 一方で、Issue に記載されている `conversation.item.delete` による古い item の削除、および summary system item の再注入はまだ実装されていません。
-
 ### 要約トリガー
 
 - **閾値**: `SUMMARY_TOKEN_THRESHOLD`（デフォルト: 8000 トークン）
@@ -275,7 +272,7 @@ Voice Live API から `conversation.item.created` イベント（`type: "functio
 
 | 対象 | 処理 |
 |------|------|
-| 古い発話テキスト | OOB で要約に圧縮 → `conversation_summary` 変数に格納 |
+| 古い発話テキスト | OOB で要約に圧縮 → `conversation.item.delete` で Voice Live から削除 → summary system item を `conversation.item.create` で先頭に注入 |
 | ツール呼出ログ | ContextManager のフル履歴に保持（Voice Live からは削除） |
 | フェーズ遷移履歴 | ContextManager のフル履歴に保持 |
 | コンテキスト変数 | 常に保持（`customer_name`, `customer_plan` 等） |

@@ -9,6 +9,8 @@ import PhaseIndicator from "./components/PhaseIndicator";
 import TranscriptLog from "./components/TranscriptLog";
 import type { TranscriptEntry } from "./components/TranscriptLog";
 import ToolCallLog from "./components/ToolCallLog";
+import PhaseTransitionLog from "./components/PhaseTransitionLog";
+import type { PhaseTransitionEntry } from "./components/PhaseTransitionLog";
 
 function wsUrl(): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -27,6 +29,9 @@ function App() {
   const [tokens, setTokens] = useState(0);
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [toolCalls, setToolCalls] = useState<ToolCallEvent[]>([]);
+  const [phaseTransitions, setPhaseTransitions] = useState<
+    PhaseTransitionEntry[]
+  >([]);
 
   const handleMessage = useCallback((msg: IncomingMessage) => {
     switch (msg.type) {
@@ -75,6 +80,15 @@ function App() {
 
       case "phase_changed":
         setPhase(msg.to);
+        setPhaseTransitions((prev) => [
+          ...prev,
+          {
+            from: msg.from,
+            to: msg.to,
+            vars: msg.vars,
+            timestamp: Date.now(),
+          },
+        ]);
         break;
 
       case "tool_call":
@@ -211,6 +225,7 @@ function App() {
             display: "flex",
             flexDirection: "column",
             minWidth: 260,
+            borderRight: "1px solid #e5e7eb",
           }}
         >
           <h3
@@ -224,6 +239,27 @@ function App() {
             Tool Calls
           </h3>
           <ToolCallLog calls={toolCalls} />
+        </div>
+
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 220,
+          }}
+        >
+          <h3
+            style={{
+              margin: 0,
+              padding: "8px 12px",
+              borderBottom: "1px solid #e5e7eb",
+              fontSize: 14,
+            }}
+          >
+            Phase Transitions
+          </h3>
+          <PhaseTransitionLog transitions={phaseTransitions} />
         </div>
       </div>
     </div>

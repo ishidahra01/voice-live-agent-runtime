@@ -139,6 +139,12 @@ class ContextManager:
     ) -> dict:
         """Prepare context for phase handoff.
 
+        This method:
+        1. Extracts relevant info from tool result into context vars
+        2. Deletes old phase items from Voice Live via conversation.item.delete
+        3. Generates a handoff summary via OOB
+        4. Injects the summary as a system message at the top of the conversation
+
         Returns: Dictionary of variables to inject into new phase instructions.
         """
         logger.info(f"Preparing handoff from {from_phase} to {to_phase}")
@@ -152,6 +158,21 @@ class ContextManager:
             self.ctx.vars["customer_id"] = tool_result["customer_id"]
         if "reason" in tool_result:
             self.ctx.vars["escalation_reason"] = tool_result["reason"]
+
+        # Delete old phase items from Voice Live conversation context
+        old_item_ids = self.ctx.vl_item_ids_by_phase.get(from_phase, [])
+        deleted_count = 0
+        for item_id in old_item_ids:
+            try:
+                await session.send({
+                    "type": "conversation.item.delete",
+                    "item_id": item_id,
+                })
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to delete item {item_id}: {e}")
+
+        logger.info(f"Deleted {deleted_count} items from phase '{from_phase}'")
 
         # Generate handoff summary using OOB
         recent_utterances = [u for u in self.ctx.utterances if u.phase == from_phase][-5:]
@@ -173,8 +194,24 @@ class ContextManager:
             logger.warning(f"Failed to generate handoff summary: {e}")
             self.ctx.vars[f"{from_phase}_summary"] = "（サマリ生成失敗）"
 
-        # Delete old phase items (optional - can be kept for full history)
-        # For now, we keep everything and rely on periodic summarization
+        # Inject handoff summary as system message at the top of the conversation
+        handoff_summary = self.ctx.vars.get(f"{from_phase}_summary", "")
+        if handoff_summary:
+            await session.send({
+                "type": "conversation.item.create",
+                "previous_item_id": "root",
+                "item": {
+                    "type": "message",
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"[{from_phase}フェーズ引き継ぎサマリ] {handoff_summary}",
+                        }
+                    ],
+                },
+            })
+            logger.info(f"Injected handoff summary for {from_phase} → {to_phase}")
 
         return self.ctx.vars.copy()
 
@@ -182,6 +219,11 @@ class ContextManager:
         self, session: "VoiceLiveSession", oob: "OOBSubagent"
     ) -> bool:
         """Conditionally summarize conversation if token threshold exceeded.
+
+        When triggered, this method:
+        1. Generates a summary of older utterances via OOB
+        2. Deletes old user/assistant items from Voice Live via conversation.item.delete
+        3. Re-injects the summary as a system message at the top of the conversation
 
         Returns: True if summarization was performed.
         """
@@ -210,11 +252,40 @@ class ContextManager:
                 timeout_s=15.0,
             )
 
-            # Store summary
+            # Store summary in app-layer context
             self.ctx.vars["conversation_summary"] = summary
             self.ctx.last_summary_token_count = self.ctx.cumulative_tokens
 
-            logger.info("Conversation summarized successfully")
+            # Delete old items from Voice Live conversation context
+            # Keep: system messages, function_call / function_call_output, last 3 turns
+            deleted_count = 0
+            for u in all_utterances:
+                if u.item_id:
+                    await session.send({
+                        "type": "conversation.item.delete",
+                        "item_id": u.item_id,
+                    })
+                    deleted_count += 1
+
+            logger.info(f"Deleted {deleted_count} old items from Voice Live context")
+
+            # Re-inject summary as a system message at the top of the conversation
+            await session.send({
+                "type": "conversation.item.create",
+                "previous_item_id": "root",
+                "item": {
+                    "type": "message",
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"[会話サマリ] {summary}",
+                        }
+                    ],
+                },
+            })
+
+            logger.info("Conversation summarized and re-injected successfully")
             return True
 
         except Exception as e:

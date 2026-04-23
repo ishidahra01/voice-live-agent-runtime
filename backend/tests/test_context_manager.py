@@ -135,6 +135,52 @@ class TestMaybeSummarize:
         oob.run.assert_called_once()
         assert cm.ctx.vars["conversation_summary"] == "summary text"
 
+    async def test_deletes_old_items_via_session(self):
+        """Verify conversation.item.delete is sent for old utterances."""
+        cm = _make_cm(threshold=100)
+        cm.ctx.cumulative_tokens = 200
+        for i in range(10):
+            cm.record_utterance("user", f"msg {i}", f"id_{i}", "triage")
+
+        oob = AsyncMock()
+        oob.run = AsyncMock(return_value="summary text")
+        session = AsyncMock()
+
+        await cm.maybe_summarize(session, oob)
+
+        # Old items (first 4 of 10, since we keep last 6) should be deleted
+        delete_calls = [
+            c for c in session.send.call_args_list
+            if c[0][0].get("type") == "conversation.item.delete"
+        ]
+        assert len(delete_calls) == 4
+        deleted_ids = {c[0][0]["item_id"] for c in delete_calls}
+        assert deleted_ids == {"id_0", "id_1", "id_2", "id_3"}
+
+    async def test_reinjects_summary_as_system_message(self):
+        """Verify summary is re-injected via conversation.item.create."""
+        cm = _make_cm(threshold=100)
+        cm.ctx.cumulative_tokens = 200
+        for i in range(10):
+            cm.record_utterance("user", f"msg {i}", f"id_{i}", "triage")
+
+        oob = AsyncMock()
+        oob.run = AsyncMock(return_value="summary text")
+        session = AsyncMock()
+
+        await cm.maybe_summarize(session, oob)
+
+        # A system message should be created at root
+        create_calls = [
+            c for c in session.send.call_args_list
+            if c[0][0].get("type") == "conversation.item.create"
+        ]
+        assert len(create_calls) == 1
+        item = create_calls[0][0][0]["item"]
+        assert item["type"] == "message"
+        assert item["role"] == "system"
+        assert "summary text" in item["content"][0]["text"]
+
 
 # ---------------------------------------------------------------------------
 # prepare_handoff
@@ -162,6 +208,48 @@ class TestPrepareHandoff:
         assert vars_dict["customer_plan"] == "プレミアム"
         assert vars_dict["customer_id"] == "12345678"
         assert "triage_summary" in vars_dict
+
+    async def test_deletes_old_phase_items(self):
+        """Verify old phase items are deleted via conversation.item.delete."""
+        cm = _make_cm()
+        cm.record_utterance("user", "hi", "id1", "triage")
+        cm.record_utterance("assistant", "hello", "id2", "triage")
+        cm.record_utterance("user", "help me", "id3", "triage")
+
+        oob = AsyncMock()
+        oob.run = AsyncMock(return_value="handoff summary")
+        session = AsyncMock()
+
+        await cm.prepare_handoff(session, oob, "triage", "identity", {})
+
+        delete_calls = [
+            c for c in session.send.call_args_list
+            if c[0][0].get("type") == "conversation.item.delete"
+        ]
+        assert len(delete_calls) == 3
+        deleted_ids = {c[0][0]["item_id"] for c in delete_calls}
+        assert deleted_ids == {"id1", "id2", "id3"}
+
+    async def test_injects_handoff_summary_as_system_message(self):
+        """Verify handoff summary is injected via conversation.item.create."""
+        cm = _make_cm()
+        cm.record_utterance("user", "hi", "id1", "triage")
+
+        oob = AsyncMock()
+        oob.run = AsyncMock(return_value="handoff summary")
+        session = AsyncMock()
+
+        await cm.prepare_handoff(session, oob, "triage", "identity", {})
+
+        create_calls = [
+            c for c in session.send.call_args_list
+            if c[0][0].get("type") == "conversation.item.create"
+        ]
+        assert len(create_calls) == 1
+        item = create_calls[0][0][0]["item"]
+        assert item["type"] == "message"
+        assert item["role"] == "system"
+        assert "handoff summary" in item["content"][0]["text"]
 
 
 # ---------------------------------------------------------------------------
