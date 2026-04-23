@@ -262,6 +262,9 @@ Voice Live API から `conversation.item.created` イベント（`type: "functio
 
 ## コンテキスト管理戦略
 
+> 現在の実装では、OOB による引き継ぎサマリ生成と `conversation_summary` / `*_summary` のアプリ層保持までは行われます。
+> 一方で、Issue に記載されている `conversation.item.delete` による古い item の削除、および summary system item の再注入はまだ実装されていません。
+
 ### 要約トリガー
 
 - **閾値**: `SUMMARY_TOKEN_THRESHOLD`（デフォルト: 8000 トークン）

@@ -5,6 +5,19 @@
 本システムは、Azure Voice Live API を活用した音声エージェントの PoC（Proof of Concept）です。
 ブラウザから WebSocket を介してバックエンド（FastAPI）に接続し、バックエンドがさらに Azure Voice Live API と双方向音声ストリームを確立する 3 層構成です。
 
+## 現在の実装ステータス
+
+このドキュメントには元 Issue で目指した設計も含まれますが、2026-04-23 時点でコードベース上で確認できる実装状態は以下の通りです。
+
+- 実装済み:
+  - ブラウザ / バックエンド / Voice Live API の双方向 WebSocket 接続
+  - 4 フェーズの状態管理、Function Calling、OOB 要約要求
+  - 会話ログ・現在フェーズ・ツール呼び出しの可視化 UI
+- 未完了または部分実装:
+  - Voice Live 接続は `azure-ai-voicelive` SDK ではなく `websockets` ベース
+  - Context compaction は「要約生成とアプリ層保持」までで、`conversation.item.delete` や summary item の再注入は未実装
+  - phase transition の専用 UI ログは未実装
+
 ```
 ┌──────────────┐         WebSocket          ┌──────────────────┐       WebSocket        ┌─────────────────────┐
 │              │  audio (PCM16 base64)  ──>  │                  │  input_audio_buffer ──> │                     │
@@ -35,6 +48,7 @@
 ### VoiceLiveSession
 
 Azure Voice Live API との WebSocket 接続を管理するコアコンポーネント。
+現状の実装は Azure SDK ではなく `websockets` を用いた低レベル実装です。
 
 - **責務**: 接続確立、初期セッション設定送信、双方向音声中継、イベントディスパッチ
 - **主要メソッド**:
