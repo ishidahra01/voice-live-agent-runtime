@@ -3,7 +3,8 @@
 import logging
 from typing import TYPE_CHECKING
 from app.phases import PHASES, TRANSITIONS, TERMINAL_TOOLS
-from app.tools import build_tool_schemas, execute_tool
+from app.tools import execute_tool
+from app.voicelive.runtime import build_phase_session_event, build_phase_session_request
 from datetime import datetime, timezone
 
 if TYPE_CHECKING:
@@ -28,9 +29,14 @@ class PhaseRouter:
         self.oob = oob_subagent
         self.current_phase = "triage"
         self._pending_tool_calls: dict[str, dict] = {}
+        self._session_ended = False
 
     async def handle_function_call(self, item: dict) -> None:
         """Handle a function_call item from Voice Live."""
+        if self._session_ended:
+            logger.info("Ignoring function call after session end")
+            return
+
         call_id = item.get("call_id", "")
         name = item.get("name", "")
         item_id = item.get("id", "")
@@ -48,6 +54,10 @@ class PhaseRouter:
 
     async def handle_function_call_arguments_done(self, event: dict) -> None:
         """Handle completion of function call arguments."""
+        if self._session_ended:
+            logger.info("Ignoring function call arguments after session end")
+            return
+
         call_id = event.get("call_id", "")
         arguments = event.get("arguments", "{}")
 
@@ -87,8 +97,15 @@ class PhaseRouter:
         # Check for phase transition
         await self._check_transition(name, result, call_id, item_id)
 
+        is_terminal_tool = name in TERMINAL_TOOLS
+
         # Send tool result back to Voice Live
-        await self._send_tool_result(call_id, result)
+        await self._send_tool_result(
+            call_id,
+            item_id,
+            result,
+            trigger_response=not is_terminal_tool,
+        )
 
         # Notify frontend
         await self.session.send_to_frontend({
@@ -100,7 +117,8 @@ class PhaseRouter:
         })
 
         # Check for terminal tools
-        if name in TERMINAL_TOOLS:
+        if is_terminal_tool:
+            self._session_ended = True
             logger.info(f"Terminal tool {name} called, ending session")
             await self.session.send_to_frontend({"type": "session_end", "reason": name})
 
@@ -165,26 +183,32 @@ class PhaseRouter:
         except KeyError as e:
             logger.warning(f"Missing variable in instructions: {e}")
 
-        # Build tool schemas
-        tools = build_tool_schemas(phase_config["tools"])
-
         # Send session.update
         await self.session.send({
             "type": "session.update",
-            "session": {
-                "instructions": instructions,
-                "tools": tools,
-            },
+            "session": build_phase_session_request(phase, instructions),
         })
+
+        await self.session.send_to_frontend(build_phase_session_event(phase))
+        await self.session.send_to_frontend(
+            self.context_manager.build_frontend_context_snapshot(phase)
+        )
 
         logger.info(f"Applied phase configuration for {phase}")
 
-    async def _send_tool_result(self, call_id: str, result: dict) -> None:
+    async def _send_tool_result(
+        self,
+        call_id: str,
+        item_id: str,
+        result: dict,
+        trigger_response: bool = True,
+    ) -> None:
         """Send tool execution result to Voice Live."""
         import json
 
         await self.session.send({
             "type": "conversation.item.create",
+            "previous_item_id": item_id,
             "item": {
                 "type": "function_call_output",
                 "call_id": call_id,
@@ -193,4 +217,5 @@ class PhaseRouter:
         })
 
         # Trigger response generation
-        await self.session.send({"type": "response.create"})
+        if trigger_response:
+            await self.session.send({"type": "response.create"})

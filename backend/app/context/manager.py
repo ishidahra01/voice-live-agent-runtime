@@ -71,6 +71,8 @@ class ContextManager:
         self.ctx = FullContext(call_id=call_id, started_at=datetime.now(timezone.utc))
         self.summary_threshold = summary_threshold
         self.current_phase = "triage"
+        self._summary_in_progress = False
+        self._last_summary_attempt_token_count = 0
 
     def record_utterance(self, role: str, text: str, item_id: str, phase: str) -> None:
         """Record a user or assistant utterance."""
@@ -129,6 +131,69 @@ class ContextManager:
         """Update cumulative token usage."""
         self.ctx.cumulative_tokens += prompt_tokens + completion_tokens
 
+    def _build_handoff_fallback_summary(self, from_phase: str) -> str:
+        """Build a deterministic fallback summary from recent utterances."""
+        phase_utterances = [u for u in self.ctx.utterances if u.phase == from_phase]
+        if not phase_utterances:
+            return ""
+
+        last_user_utterance = next(
+            (u.text for u in reversed(phase_utterances) if u.role == "user" and u.text.strip()),
+            "",
+        )
+        last_assistant_utterance = next(
+            (
+                u.text
+                for u in reversed(phase_utterances)
+                if u.role == "assistant" and u.text.strip()
+            ),
+            "",
+        )
+
+        if last_user_utterance and last_assistant_utterance:
+            return (
+                f"お客様の直近のご要件: {last_user_utterance} "
+                f"直前の案内: {last_assistant_utterance}"
+            )
+        return last_user_utterance or last_assistant_utterance
+
+    def _serialize_tool_calls(self, phase: str | None = None, limit: int = 3) -> str:
+        tool_calls = self.ctx.tool_calls
+        if phase is not None:
+            tool_calls = [tool_call for tool_call in tool_calls if tool_call.phase == phase]
+
+        if not tool_calls:
+            return "なし"
+
+        selected = tool_calls[-limit:]
+        serialized = []
+        for tool_call in selected:
+            serialized.append(
+                f"- {tool_call.name}(args={tool_call.args}) => {tool_call.result}"
+            )
+        return "\n".join(serialized)
+
+    def build_frontend_context_snapshot(self, current_phase: str) -> dict:
+        """Build a frontend-facing snapshot of context state."""
+        summary_keys = {
+            key: value
+            for key, value in self.ctx.vars.items()
+            if key.endswith("_summary") or key == "conversation_summary"
+        }
+        live_vars = {
+            key: value
+            for key, value in self.ctx.vars.items()
+            if key not in summary_keys
+        }
+        return {
+            "type": "context_snapshot",
+            "phase": current_phase,
+            "vars": live_vars,
+            "summaries": summary_keys,
+            "cumulative_tokens": self.ctx.cumulative_tokens,
+            "last_summary_token_count": self.ctx.last_summary_token_count,
+        }
+
     async def prepare_handoff(
         self,
         session: "VoiceLiveSession",
@@ -150,14 +215,16 @@ class ContextManager:
         logger.info(f"Preparing handoff from {from_phase} to {to_phase}")
 
         # Extract relevant info from tool result
-        if "customer_name" in tool_result:
-            self.ctx.vars["customer_name"] = tool_result["customer_name"]
+        customer_name = tool_result.get("customer_name") or tool_result.get("name")
+        if customer_name:
+            self.ctx.vars["customer_name"] = customer_name
         if "plan" in tool_result:
             self.ctx.vars["customer_plan"] = tool_result["plan"]
         if "customer_id" in tool_result:
             self.ctx.vars["customer_id"] = tool_result["customer_id"]
         if "reason" in tool_result:
             self.ctx.vars["escalation_reason"] = tool_result["reason"]
+            self.ctx.vars["escalation_summary"] = tool_result["reason"]
 
         # Delete old phase items from Voice Live conversation context
         old_item_ids = self.ctx.vl_item_ids_by_phase.get(from_phase, [])
@@ -176,9 +243,18 @@ class ContextManager:
 
         # Generate handoff summary using OOB
         recent_utterances = [u for u in self.ctx.utterances if u.phase == from_phase][-5:]
-        summary_prompt = f"""以下の会話を1-2文で要約してください:
+        summary_prompt = f"""以下はフェーズ引き継ぎ用の情報です。次フェーズが会話を聞き直さず継続できるように、
+    お客様の主目的、すでに完了した確認・処理、次に対応すべき未完了事項、重要な事実（顧客番号、プラン、請求金額など）を含めて
+    日本語で2-4文の実務的なサマリを作成してください。
 
-"""
+    現在のコンテキスト変数:
+    {self.ctx.vars}
+
+    直近ツール実行:
+    {self._serialize_tool_calls(phase=from_phase)}
+
+    会話:
+    """
         for u in recent_utterances:
             summary_prompt += f"{u.role}: {u.text}\n"
 
@@ -189,23 +265,27 @@ class ContextManager:
                 output_modalities=["text"],
                 timeout_s=10.0,
             )
-            self.ctx.vars[f"{from_phase}_summary"] = summary
+            self.ctx.vars[f"{from_phase}_summary"] = summary.strip()
         except Exception as e:
             logger.warning(f"Failed to generate handoff summary: {e}")
             self.ctx.vars[f"{from_phase}_summary"] = "（サマリ生成失敗）"
+
+        if not self.ctx.vars[f"{from_phase}_summary"] or self.ctx.vars[f"{from_phase}_summary"] == "（サマリ生成失敗）":
+            fallback_summary = self._build_handoff_fallback_summary(from_phase)
+            if fallback_summary:
+                self.ctx.vars[f"{from_phase}_summary"] = fallback_summary
 
         # Inject handoff summary as system message at the top of the conversation
         handoff_summary = self.ctx.vars.get(f"{from_phase}_summary", "")
         if handoff_summary:
             await session.send({
                 "type": "conversation.item.create",
-                "previous_item_id": "root",
                 "item": {
                     "type": "message",
                     "role": "system",
                     "content": [
                         {
-                            "type": "text",
+                            "type": "input_text",
                             "text": f"[{from_phase}フェーズ引き継ぎサマリ] {handoff_summary}",
                         }
                     ],
@@ -227,7 +307,10 @@ class ContextManager:
 
         Returns: True if summarization was performed.
         """
-        if self.ctx.cumulative_tokens < self.summary_threshold:
+        if self._summary_in_progress:
+            return False
+
+        if (self.ctx.cumulative_tokens - self._last_summary_attempt_token_count) < self.summary_threshold:
             return False
 
         logger.info(f"Token threshold reached ({self.ctx.cumulative_tokens}), summarizing")
@@ -238,11 +321,23 @@ class ContextManager:
             return False
 
         # Generate summary
-        summary_prompt = """以下の会話履歴を300トークン以内で要約してください:
+        summary_prompt = f"""以下は会話履歴の圧縮用情報です。
+    会話だけでなく、現在のコンテキスト変数やツール実行結果も踏まえ、後続フェーズやツール連携で必要な事実が抜けないように
+    日本語300トークン以内で要約してください。特に、お客様の目的、完了済み処理、未解決事項、重要ID/数値/プラン名を残してください。
 
-"""
+    現在のコンテキスト変数:
+    {self.ctx.vars}
+
+    最近のツール実行:
+    {self._serialize_tool_calls(limit=6)}
+
+    会話履歴:
+    """
         for u in all_utterances:
             summary_prompt += f"{u.role}: {u.text}\n"
+
+        self._summary_in_progress = True
+        self._last_summary_attempt_token_count = self.ctx.cumulative_tokens
 
         try:
             summary = await oob.run(
@@ -275,13 +370,12 @@ class ContextManager:
             # Re-inject summary as a system message at the top of the conversation
             await session.send({
                 "type": "conversation.item.create",
-                "previous_item_id": "root",
                 "item": {
                     "type": "message",
                     "role": "system",
                     "content": [
                         {
-                            "type": "text",
+                            "type": "input_text",
                             "text": f"[会話サマリ] {summary}",
                         }
                     ],
@@ -294,6 +388,8 @@ class ContextManager:
         except Exception as e:
             logger.error(f"Failed to summarize conversation: {e}")
             return False
+        finally:
+            self._summary_in_progress = False
 
     def dump(self, path: str) -> None:
         """Dump full context to JSON file."""

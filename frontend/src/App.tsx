@@ -11,10 +11,31 @@ import type { TranscriptEntry } from "./components/TranscriptLog";
 import ToolCallLog from "./components/ToolCallLog";
 import PhaseTransitionLog from "./components/PhaseTransitionLog";
 import type { PhaseTransitionEntry } from "./components/PhaseTransitionLog";
+import RuntimeContextPanel from "./components/RuntimeContextPanel";
+import type { ContextSnapshotEvent, SessionConfigEvent } from "./types/events";
 
 function wsUrl(): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   return `${proto}://${location.host}/ws/voice`;
+}
+
+function insertUserTranscript(
+  prev: TranscriptEntry[],
+  entry: TranscriptEntry,
+): TranscriptEntry[] {
+  const firstPendingAssistantIdx = prev.findIndex(
+    (item) => item.role === "assistant" && !item.phase,
+  );
+
+  if (firstPendingAssistantIdx < 0) {
+    return [...prev, entry];
+  }
+
+  return [
+    ...prev.slice(0, firstPendingAssistantIdx),
+    entry,
+    ...prev.slice(firstPendingAssistantIdx),
+  ];
 }
 
 function App() {
@@ -32,6 +53,13 @@ function App() {
   const [phaseTransitions, setPhaseTransitions] = useState<
     PhaseTransitionEntry[]
   >([]);
+  const [sessionConfig, setSessionConfig] = useState<SessionConfigEvent | null>(null);
+  const [contextSnapshot, setContextSnapshot] =
+    useState<ContextSnapshotEvent | null>(null);
+  const [runtimeSession, setRuntimeSession] = useState<{
+    model: string | null;
+    voice: string | null;
+  } | null>(null);
 
   const handleMessage = useCallback((msg: IncomingMessage) => {
     switch (msg.type) {
@@ -51,15 +79,18 @@ function App() {
             };
             return updated;
           }
-          return [
-            ...prev,
-            {
-              id: msg.item_id,
-              role: msg.role,
-              text: msg.text,
-              phase: msg.phase,
-            },
-          ];
+          const nextEntry = {
+            id: msg.item_id,
+            role: msg.role,
+            text: msg.text,
+            phase: msg.phase,
+          } satisfies TranscriptEntry;
+
+          if (msg.role === "user") {
+            return insertUserTranscript(prev, nextEntry);
+          }
+
+          return [...prev, nextEntry];
         });
         break;
 
@@ -100,11 +131,31 @@ function App() {
         break;
 
       case "summary_executed":
-        setTokens((prev) => prev + msg.tokens);
+        setTokens(msg.tokens);
+        break;
+
+      case "session_config":
+        setSessionConfig(msg);
+        break;
+
+      case "session_updated":
+        setRuntimeSession({ model: msg.model, voice: msg.voice });
+        break;
+
+      case "context_snapshot":
+        setContextSnapshot(msg);
+        setTokens(msg.cumulative_tokens);
         break;
 
       case "session_end":
         console.log("Session ended:", msg.reason);
+        void recorderRef.current?.stop();
+        recorderRef.current = null;
+        playerRef.current?.flush();
+        playerRef.current = null;
+        wsRef.current?.disconnect();
+        wsRef.current = null;
+        setRecording(false);
         break;
 
       case "error":
@@ -180,6 +231,8 @@ function App() {
           connectionState={connectionState}
           recording={recording}
           tokens={tokens}
+          sessionModel={runtimeSession?.model ?? sessionConfig?.model ?? null}
+          sessionVoice={runtimeSession?.voice ?? sessionConfig?.voice ?? null}
           onStart={handleStart}
           onStop={handleStop}
         />
@@ -246,7 +299,8 @@ function App() {
             flex: 1,
             display: "flex",
             flexDirection: "column",
-            minWidth: 220,
+            minWidth: 320,
+            background: "#f8fafc",
           }}
         >
           <h3
@@ -257,9 +311,27 @@ function App() {
               fontSize: 14,
             }}
           >
+            Runtime And Context
+          </h3>
+          <RuntimeContextPanel
+            sessionConfig={sessionConfig}
+            contextSnapshot={contextSnapshot}
+          />
+          <h3
+            style={{
+              margin: 0,
+              padding: "8px 12px",
+              borderTop: "1px solid #e5e7eb",
+              borderBottom: "1px solid #e5e7eb",
+              fontSize: 14,
+              background: "#fff",
+            }}
+          >
             Phase Transitions
           </h3>
-          <PhaseTransitionLog transitions={phaseTransitions} />
+          <div style={{ minHeight: 180, maxHeight: "35%" }}>
+            <PhaseTransitionLog transitions={phaseTransitions} />
+          </div>
         </div>
       </div>
     </div>

@@ -11,6 +11,7 @@ from app.voicelive.session import VoiceLiveSession
 from app.context.manager import ContextManager
 from app.subagent.oob import OOBSubagent
 from app.phases.router import PhaseRouter
+from app.voicelive.runtime import build_phase_session_event
 
 # Configure logging
 logging.basicConfig(
@@ -53,6 +54,7 @@ async def voice_websocket(websocket: WebSocket):
     # Initialize components
     voice_live_session = None
     context_manager = None
+    oob_subagent = None
 
     try:
         # Create Voice Live session
@@ -73,6 +75,11 @@ async def voice_websocket(websocket: WebSocket):
             session=voice_live_session,
             context_manager=context_manager,
             oob_subagent=oob_subagent,
+        )
+
+        await voice_live_session.send_to_frontend(build_phase_session_event("triage"))
+        await voice_live_session.send_to_frontend(
+            context_manager.build_frontend_context_snapshot("triage")
         )
 
         # Start Voice Live event handler
@@ -123,6 +130,9 @@ async def voice_websocket(websocket: WebSocket):
         # Cleanup
         if voice_live_session:
             await voice_live_session.close()
+
+        if oob_subagent:
+            await oob_subagent.close()
 
         # Dump conversation log
         if context_manager:

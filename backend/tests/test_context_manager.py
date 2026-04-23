@@ -170,7 +170,7 @@ class TestMaybeSummarize:
 
         await cm.maybe_summarize(session, oob)
 
-        # A system message should be created at root
+        # A system message should be created with input_text content
         create_calls = [
             c for c in session.send.call_args_list
             if c[0][0].get("type") == "conversation.item.create"
@@ -179,6 +179,7 @@ class TestMaybeSummarize:
         item = create_calls[0][0][0]["item"]
         assert item["type"] == "message"
         assert item["role"] == "system"
+        assert item["content"][0]["type"] == "input_text"
         assert "summary text" in item["content"][0]["text"]
 
 
@@ -208,6 +209,73 @@ class TestPrepareHandoff:
         assert vars_dict["customer_plan"] == "プレミアム"
         assert vars_dict["customer_id"] == "12345678"
         assert "triage_summary" in vars_dict
+
+    async def test_uses_fallback_summary_when_oob_returns_blank(self):
+        cm = _make_cm()
+        cm.record_utterance("user", "私の料金プランを知りたいです。", "id1", "triage")
+        cm.record_utterance(
+            "assistant",
+            "料金プラン確認のため本人確認を行います。",
+            "id2",
+            "triage",
+        )
+
+        oob = AsyncMock()
+        oob.run = AsyncMock(return_value="   ")
+        session = AsyncMock()
+
+        vars_dict = await cm.prepare_handoff(session, oob, "triage", "identity", {})
+
+        assert "私の料金プランを知りたいです。" in vars_dict["triage_summary"]
+        assert "料金プラン確認のため本人確認を行います。" in vars_dict["triage_summary"]
+
+    async def test_uses_fallback_summary_when_oob_fails(self):
+        cm = _make_cm()
+        cm.record_utterance("user", "請求の確認をしたいです。", "id1", "business")
+
+        oob = AsyncMock()
+        oob.run = AsyncMock(side_effect=RuntimeError("oob failed"))
+        session = AsyncMock()
+
+        vars_dict = await cm.prepare_handoff(session, oob, "business", "escalation", {})
+
+        assert vars_dict["business_summary"] == "請求の確認をしたいです。"
+
+    async def test_extracts_customer_name_from_verify_customer_result(self):
+        cm = _make_cm()
+        cm.record_utterance("user", "hi", "id1", "identity")
+
+        oob = AsyncMock()
+        oob.run = AsyncMock(return_value="handoff summary")
+        session = AsyncMock()
+
+        tool_result = {
+            "name": "山田 太郎",
+            "plan": "プレミアム",
+            "customer_id": "12345678",
+        }
+
+        vars_dict = await cm.prepare_handoff(session, oob, "identity", "business", tool_result)
+
+        assert vars_dict["customer_name"] == "山田 太郎"
+        assert vars_dict["customer_plan"] == "プレミアム"
+
+    async def test_extracts_escalation_summary_from_reason(self):
+        cm = _make_cm()
+        cm.record_utterance("user", "hi", "id1", "business")
+
+        oob = AsyncMock()
+        oob.run = AsyncMock(return_value="handoff summary")
+        session = AsyncMock()
+
+        tool_result = {
+            "reason": "請求に関する苦情のため担当者へ引き継ぐ",
+        }
+
+        vars_dict = await cm.prepare_handoff(session, oob, "business", "escalation", tool_result)
+
+        assert vars_dict["escalation_reason"] == "請求に関する苦情のため担当者へ引き継ぐ"
+        assert vars_dict["escalation_summary"] == "請求に関する苦情のため担当者へ引き継ぐ"
 
     async def test_deletes_old_phase_items(self):
         """Verify old phase items are deleted via conversation.item.delete."""
@@ -249,6 +317,7 @@ class TestPrepareHandoff:
         item = create_calls[0][0][0]["item"]
         assert item["type"] == "message"
         assert item["role"] == "system"
+        assert item["content"][0]["type"] == "input_text"
         assert "handoff summary" in item["content"][0]["text"]
 
 

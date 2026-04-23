@@ -11,6 +11,8 @@
 | **business** | 業務受付・処理 | `lookup_order`, `update_plan`, `end_call`, `escalate_to_human` |
 | **escalation** | エスカレーション準備 | `create_escalation` |
 
+実装上は triage が realtime runtime、identity / business / escalation が structured runtime です。structured runtime では `session.update` で `gpt-5-nano` と男性 voice `ja-JP-KeitaNeural` に切り替わります。
+
 ---
 
 ## フェーズ定義
@@ -225,12 +227,13 @@ Voice Live API から `conversation.item.created` イベント（`type: "functio
 
 ### 5. session.update
 
-新フェーズの instructions（コンテキスト変数を展開済み）とツールスキーマで `session.update` を Voice Live API に送信。
+新フェーズの instructions（コンテキスト変数を展開済み）とツールスキーマに加え、phase ごとの `voice` / `temperature` を含めて `session.update` を Voice Live API に送信する。実装上は `model` も送っているが、現在の実測では `session.updated` に返る `model` は接続時の realtime model のままで、phase 切替では変化していない。
 
 ```json
 {
   "type": "session.update",
   "session": {
+    "voice": { "name": "ja-JP-KeitaNeural", "type": "azure-standard" },
     "instructions": "業務受付フェーズです。\n本人確認済みのお客様: 山田 太郎様 ...",
     "tools": [
       { "type": "function", "name": "lookup_order", ... },
@@ -257,6 +260,13 @@ Voice Live API から `conversation.item.created` イベント（`type: "functio
   "vars": { "customer_name": "山田 太郎", "customer_plan": "プレミアム" }
 }
 ```
+
+### 8. session_config / context_snapshot 通知
+
+オペレータ UI にリアルタイム状態を表示するため、backend は phase 適用直後に `session_config` と `context_snapshot` を送る。
+
+- `session_config`: 現在の phase、runtime mode、model、voice、temperature、利用可能ツール
+- `context_snapshot`: 現在の vars、引き継ぎサマリ、会話要約、トークン量
 
 ---
 

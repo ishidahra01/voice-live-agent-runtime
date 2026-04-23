@@ -1,6 +1,5 @@
 """Tests for OOBSubagent."""
 
-import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,10 +17,13 @@ def _make_session() -> AsyncMock:
     return session
 
 
-def _make_response_done_event(oob_id: str, text: str = "result text") -> dict:
+def _make_response_done_event(
+    text: str = "result text",
+    event_id: str | None = "oob-test",
+) -> dict:
     return {
+        "event_id": event_id,
         "response": {
-            "metadata": {"oob_id": oob_id, "purpose": "test"},
             "output": [
                 {
                     "type": "message",
@@ -38,114 +40,109 @@ def _make_response_done_event(oob_id: str, text: str = "result text") -> dict:
 
 
 class TestOOBRun:
-    async def test_sends_correct_event_to_session(self):
+    async def test_uses_summary_request(self):
         session = _make_session()
         oob = OOBSubagent(session)
 
-        async def _capture_and_resolve(*args, **kwargs):
-            """Capture the sent event then resolve the pending future."""
-            event = args[0]
-            oob_id = event["response"]["metadata"]["oob_id"]
-            oob.handle_response_done(_make_response_done_event(oob_id, "ok"))
-
-        session.send.side_effect = _capture_and_resolve
+        oob._request_summary = AsyncMock(return_value="ok")
 
         result = await oob.run(purpose="test", instructions="do something")
 
-        session.send.assert_called_once()
-        sent = session.send.call_args.args[0]
-        assert sent["type"] == "response.create"
-        assert sent["response"]["conversation"] == "none"
-        assert sent["response"]["instructions"] == "do something"
+        oob._request_summary.assert_awaited_once()
         assert result == "ok"
 
-    async def test_run_timeout(self):
+    async def test_run_propagates_timeout(self):
         session = _make_session()
         oob = OOBSubagent(session)
+        oob._request_summary = AsyncMock(side_effect=TimeoutError())
 
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(TimeoutError):
             await oob.run(purpose="timeout_test", instructions="will timeout", timeout_s=0.1)
-
-        # After timeout, pending future should be cleaned up
-        assert len(oob._pending) == 0
 
 
 class TestHandleResponseDone:
-    async def test_resolves_correct_future(self):
+    async def test_is_noop_for_http_summaries(self):
         session = _make_session()
         oob = OOBSubagent(session)
 
-        future = asyncio.get_event_loop().create_future()
-        oob._pending["test-id"] = future
+        handled = oob.handle_response_done(_make_response_done_event())
 
-        oob.handle_response_done(_make_response_done_event("test-id", "hello"))
+        assert handled is False
 
-        assert future.done()
-        assert future.result() == "hello"
-        assert "test-id" not in oob._pending
-
-    async def test_ignores_events_without_oob_id(self):
+    async def test_builds_messages_with_serialized_input_items(self):
         session = _make_session()
         oob = OOBSubagent(session)
 
-        future = asyncio.get_event_loop().create_future()
-        oob._pending["some-id"] = future
+        messages = oob._build_messages(
+            purpose="handoff_summary",
+            instructions="summarize this",
+            input_items=[{"type": "message", "text": "hello"}],
+        )
 
-        oob.handle_response_done({"response": {"metadata": {}, "output": []}})
+        assert len(messages) == 3
+        assert "summarize this" in messages[1]["content"]
+        assert "hello" in messages[2]["content"]
 
-        assert not future.done()
-        assert "some-id" in oob._pending
 
-    async def test_ignores_unknown_oob_id(self):
+class TestRequestSummary:
+    def test_summary_base_url_uses_openai_v1_suffix(self):
         session = _make_session()
         oob = OOBSubagent(session)
 
-        future = asyncio.get_event_loop().create_future()
-        oob._pending["my-id"] = future
+        assert oob._get_client is not None
+        assert oob._serialize_input_items([{"a": 1}]) == "{'a': 1}"
 
-        oob.handle_response_done(_make_response_done_event("other-id"))
-
-        assert not future.done()
-        assert "my-id" in oob._pending
-
-
-class TestExtractText:
-    def test_extracts_text_correctly(self):
+    def test_build_completion_kwargs_for_gpt5_reasoning(self):
         session = _make_session()
         oob = OOBSubagent(session)
 
-        response = {
-            "output": [
-                {
-                    "type": "message",
-                    "content": [{"type": "text", "text": "extracted"}],
-                }
-            ]
-        }
-        assert oob._extract_text_from_response(response) == "extracted"
+        from app.subagent.oob import settings
+        original_model = settings.azure_summary_model
+        settings.azure_summary_model = "gpt-5-nano"
 
-    def test_returns_empty_for_no_output(self):
+        try:
+            kwargs = oob._build_completion_kwargs(
+                purpose="handoff_summary",
+                instructions="summarize",
+                input_items=None,
+                timeout=5,
+            )
+        finally:
+            settings.azure_summary_model = original_model
+
+        assert kwargs["model"]
+        assert "max_completion_tokens" in kwargs
+        assert "max_tokens" not in kwargs
+        assert "temperature" not in kwargs
+        assert kwargs["reasoning_effort"] == "minimal"
+
+    def test_reasoning_effort_is_none_for_gpt5_4(self, monkeypatch):
         session = _make_session()
         oob = OOBSubagent(session)
-        assert oob._extract_text_from_response({"output": []}) == ""
-        assert oob._extract_text_from_response({}) == ""
 
+        monkeypatch.setattr("app.subagent.oob.settings.azure_summary_model", "gpt-5.4-nano-1")
+        kwargs = oob._build_completion_kwargs(
+            purpose="handoff_summary",
+            instructions="summarize",
+            input_items=None,
+            timeout=5,
+        )
 
-class TestConcurrentRequests:
-    async def test_multiple_concurrent_oob_tracked(self):
+        assert kwargs["reasoning_effort"] == "none"
+        assert "temperature" not in kwargs
+
+    def test_build_completion_kwargs_for_non_reasoning_model(self, monkeypatch):
         session = _make_session()
         oob = OOBSubagent(session)
 
-        # Create two pending futures manually
-        f1 = asyncio.get_event_loop().create_future()
-        f2 = asyncio.get_event_loop().create_future()
-        oob._pending["id-1"] = f1
-        oob._pending["id-2"] = f2
+        monkeypatch.setattr("app.subagent.oob.settings.azure_summary_model", "gpt-4.1-mini")
+        kwargs = oob._build_completion_kwargs(
+            purpose="handoff_summary",
+            instructions="summarize",
+            input_items=None,
+            timeout=5,
+        )
 
-        # Resolve them in reverse order
-        oob.handle_response_done(_make_response_done_event("id-2", "second"))
-        oob.handle_response_done(_make_response_done_event("id-1", "first"))
-
-        assert f1.result() == "first"
-        assert f2.result() == "second"
-        assert len(oob._pending) == 0
+        assert "max_tokens" in kwargs
+        assert "temperature" in kwargs
+        assert "max_completion_tokens" not in kwargs

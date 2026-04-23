@@ -154,6 +154,9 @@ class TestHandleFunctionCallArgumentsDone:
         assert len(session_end_msgs) == 1
         assert session_end_msgs[0]["reason"] == "end_call"
 
+        sent_types = [c.args[0].get("type") for c in session.send.call_args_list]
+        assert sent_types.count("response.create") == 0
+
     async def test_unknown_call_id_is_ignored(self):
         session, ctx, oob = _make_mocks()
         router = PhaseRouter(session, ctx, oob)

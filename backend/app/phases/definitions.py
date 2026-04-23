@@ -3,6 +3,7 @@
 # Phase instructions and tool assignments
 PHASES = {
     "triage": {
+      "runtime_mode": "realtime",
         "instructions": """あなたはコンタクトセンター受付AIです。
 明るく丁寧な応対で、お客様のご用件を聞き取ってください。
 
@@ -17,7 +18,10 @@ PHASES = {
         "tools": ["start_identity_verification", "end_call", "escalate_to_human"],
     },
     "identity": {
+      "runtime_mode": "structured",
         "instructions": """本人確認フェーズです。
+引き継ぎ事項: {triage_summary}
+
 お客様に『本人確認のため、8桁のお客様番号をお願いします』と伝えてください。
 8桁の数字を聞き取ったら verify_customer ツールを呼んでください。
 3回聞き取り失敗したら escalate_to_human を呼んでください。
@@ -25,16 +29,19 @@ PHASES = {
         "tools": ["verify_customer", "back_to_triage", "escalate_to_human"],
     },
     "business": {
+      "runtime_mode": "structured",
         "instructions": """業務受付フェーズです。
 本人確認済みのお客様: {customer_name}様 (プラン: {customer_plan})
 引き継ぎ事項: {triage_summary}
 
-お客様のご用件について具体的な情報を聞き取り、
+      引き継ぎ事項に未対応の内容がある場合は、その続きを優先して案内してください。不要に最初から用件を聞き直さず、必要な不足情報だけ確認してください。
+      お客様のご用件について具体的な情報を聞き取り、
 適切なツール (lookup_order, update_plan 等) を呼んでください。
 完了したらお礼を述べて end_call を呼んでください。""",
         "tools": ["lookup_order", "update_plan", "end_call", "escalate_to_human"],
     },
     "escalation": {
+      "runtime_mode": "structured",
         "instructions": """エスカレーション準備フェーズです。
 引き継ぎサマリ: {escalation_summary}
 

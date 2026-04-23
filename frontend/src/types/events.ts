@@ -34,8 +34,29 @@ export type ToolCallEvent = {
 export type SpeechStartedEvent = { type: "speech_started" };
 export type SpeechStoppedEvent = { type: "speech_stopped" };
 export type SessionReadyEvent = { type: "session_ready" };
+export type SessionUpdatedEvent = {
+  type: "session_updated";
+  model: string | null;
+  voice: string | null;
+};
 export type SessionEndEvent = { type: "session_end"; reason: string };
 export type SummaryExecutedEvent = { type: "summary_executed"; tokens: number };
+export type SessionConfigEvent = {
+  type: "session_config";
+  phase: string;
+  mode: string;
+  model: string;
+  voice: string;
+  tools: string[];
+};
+export type ContextSnapshotEvent = {
+  type: "context_snapshot";
+  phase: string;
+  vars: Record<string, unknown>;
+  summaries: Record<string, unknown>;
+  cumulative_tokens: number;
+  last_summary_token_count: number;
+};
 export type ErrorEvent = { type: "error"; message: string };
 
 export type IncomingMessage =
@@ -47,6 +68,9 @@ export type IncomingMessage =
   | SpeechStartedEvent
   | SpeechStoppedEvent
   | SessionReadyEvent
+  | SessionUpdatedEvent
   | SessionEndEvent
   | SummaryExecutedEvent
+  | SessionConfigEvent
+  | ContextSnapshotEvent
   | ErrorEvent;

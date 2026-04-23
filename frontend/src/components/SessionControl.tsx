@@ -5,6 +5,8 @@ interface Props {
   connectionState: ConnectionState;
   recording: boolean;
   tokens: number;
+  sessionModel?: string | null;
+  sessionVoice?: string | null;
   onStart: () => void;
   onStop: () => void;
 }
@@ -19,6 +21,8 @@ const SessionControl: React.FC<Props> = ({
   connectionState,
   recording,
   tokens,
+  sessionModel,
+  sessionVoice,
   onStart,
   onStop,
 }) => {
@@ -79,6 +83,14 @@ const SessionControl: React.FC<Props> = ({
       <div style={{ fontSize: 13, color: "#6b7280" }}>
         Tokens: <strong>{tokens.toLocaleString()}</strong>
       </div>
+
+      {(sessionModel || sessionVoice) && (
+        <div style={{ fontSize: 13, color: "#6b7280" }}>
+          Runtime: <strong>{sessionModel ?? "-"}</strong>
+          {" / "}
+          <strong>{sessionVoice ?? "-"}</strong>
+        </div>
+      )}
     </div>
   );
 };
