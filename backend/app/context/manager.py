@@ -256,8 +256,11 @@ class ContextManager:
             self.ctx.vars["conversation_summary"] = summary
             self.ctx.last_summary_token_count = self.ctx.cumulative_tokens
 
-            # Delete old items from Voice Live conversation context
-            # Keep: system messages, function_call / function_call_output, last 3 turns
+            # Delete old items from Voice Live conversation context.
+            # all_utterances already excludes the last 6 entries (3 user + 3
+            # assistant turns) via the slice on line 236. System messages,
+            # function_call and function_call_output items are not tracked in
+            # utterances and are therefore not deleted.
             deleted_count = 0
             for u in all_utterances:
                 if u.item_id:
